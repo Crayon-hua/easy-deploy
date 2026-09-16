@@ -1,6 +1,14 @@
+# Gitea 访问配置（可选）。url 与 token 都不填则跳过连通性校验；拉取 Gitea 制品时仍需要
 gitea:
-  url: http://127.0.0.1:3000
-  token: ${GITEA_TOKEN}
+  url: # http://127.0.0.1:3000
+  token: # ${GITEA_TOKEN}  或直接写明文 token
+
+# GitHub 访问配置（可选）。token 不填则跳过连通性校验；package.source=github 时必填
+github:
+  token: # ${GH_TOKEN}  或直接写明文 PAT
+  # username: Crayon-hua        # GHCR docker login 用户名（仅 GitHub 镜像需要；Gitea 不登录）
+  # url: https://api.github.com
+  # registry: ghcr.io
 
 logs:
   max-log-history: 10
@@ -19,6 +27,8 @@ services:
   - name: frontend
     package:
       type: generic
+      # source: gitea            # 省略默认为 gitea；GitHub Actions artifact 设为 github
+      # repo: ihxy-blog          # source=github 时必填（仓库名，不含 owner）
       owner: OwnerName
       name: PackageName
       file: dist.zip
@@ -29,6 +39,7 @@ services:
   - name: docker-compose-backend
     package:
       type: docker-container
+      # source: github           # 省略默认为 gitea；GHCR 设为 github（ghcr.io/{owner}/{name}）
       owner: OwnerName
       name: PackageName
     deploy:

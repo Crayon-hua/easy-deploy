@@ -5,7 +5,7 @@
 ## 配置文件整体结构
 
 ```yaml
-# 配置Gitea的访问方式
+# 配置 Gitea 的访问方式（可选；url 与 token 都不填则跳过连通性校验）
 gitea:
   # 访问 Gitea 的方式，建议配好网络都走内网
   url: http://10.10.10.11:10088
@@ -13,6 +13,14 @@ gitea:
   # 1. ${GITEA_TOKEN} 从环境变量读取（推荐，token 不进 git）
   # 2. 直接写明文 token 字符串
   token: ${GITEA_TOKEN}
+
+# 配置 GitHub 的访问方式（可选；token 不填则跳过连通性校验）
+# package.source=github 的服务必填 token
+github:
+  token: ${GH_TOKEN}
+  # username: Crayon-hua          # GHCR docker login 用户名（仅 GitHub 镜像需要；未配则用 package.owner）
+  # url: https://api.github.com   # 默认；GitHub Enterprise 可改
+  # registry: ghcr.io             # docker-container + source=github 时的镜像仓库，默认 ghcr.io
 
 # 日志
 logs:
@@ -70,7 +78,7 @@ services:
 ## 脚本（scripts）
 
 - `reload-nginx-cmd`：存在 `frontend-dist` 服务时必填；deploy 成功后执行，用于重载 Nginx。
-- `package-timeout-seconds`：单个 service 的 **package 流程总时间上限**（秒，默认 60）。worker 用 `timeout` 包裹 `package-generic.sh` / `package-docker-container.sh`，含 Gitea 查询、制品下载、`docker pull` 等全部步骤；超时则该 worker 失败，不进入 deploy。
+- `package-timeout-seconds`：单个 service 的 **package 流程总时间上限**（秒，默认 60）。worker 用 `timeout` 包裹 `package-generic.sh` / `package-docker-container.sh`，含 Gitea / GitHub 查询、制品下载、`docker pull` 等全部步骤；超时则该 worker 失败，不进入 deploy。
 
 **配置变更触发 redeploy**：`current-versions.json` 中每个 service 另有 `config_hash`（对该 service 的 package + deploy 段 hash）。worker 启动时若 hash 缺失或与当前配置不一致，会以 `force` 模式强制 package + deploy（即使制品版本/digest 未变）。如果 `current-versions.json` 不存在，按首次运行初始化；如果文件已存在但不可读或不是合法 JSON，则跳过本轮，避免误判为版本为空后强制部署。详见 [config-hash.plan.md](./prompt/config-hash.plan.md)。
 
@@ -81,12 +89,13 @@ services:
 - 每一个 service 就是部署脚本后台并行单独处理的一个任务
 
 - name：这个任务在配置文件里的唯一标识，不可重复，也是日志文件记录会引用的文件名，所以不可以有文件名不能用的符号
-- package：定义制品的获取流程；**一个制品只能对应一个 service 配置段**——`docker-container` 按 `owner`+`name` 全局唯一，`generic` 按 `owner`+`name`+`file` 全局唯一
+- package：定义制品的获取流程；**一个制品只能对应一个 service 配置段**——`docker-container` 按 `source`+`owner`+`name` 全局唯一，`generic` 按 `source`+`owner`+`name`+`file`（GitHub 再加 `repo`）全局唯一
 - deploy：定义获取到的制品怎么部署
 - package 和 deploy 配置段有对应关系，区分方式就是 package 的 type 和 deploy 的 strategy，现版本支持的配置对应方式如下
   - package.type=generic -> deploy.strategy=frontend-dist
   - package.type=docker-container -> deploy.strategy=docker-compose
   - package.type=docker-container -> deploy.strategy=docker-run
+- `package.source`：`gitea`（默认）或 `github`。GitHub 前端走 Actions artifact；GitHub 后端走 `ghcr.io`
 
 **以下是配置段参考：**
 
@@ -97,6 +106,7 @@ services:
 ```yaml
 package:
   type: generic
+  source: gitea              # 可省略，默认 gitea
   owner: gitea-package所有者名字
   name: gitea-package名字
   file: 制品文件的名字
@@ -105,6 +115,34 @@ deploy:
   target: 解压缩制品文件的目标目录
 ```
 
+GitHub Actions artifact（下载始终为 zip，`file` 须以 `.zip` 结尾；版本号用 artifact id）：
+
+```yaml
+package:
+  type: generic
+  source: github
+  owner: crayon-hua          # GitHub 用户或组织
+  repo: ihxy-blog            # 仓库名
+  name: ihxy-blog-ui         # Actions artifact 名称
+  file: ihxy-blog-ui.zip
+deploy:
+  strategy: frontend-dist
+  target: 解压缩制品文件的目标目录
+```
+
+等价于：
+
+```bash
+curl -L \
+  -H "Accept: application/vnd.github+json" \
+  -H "Authorization: Bearer $GH_TOKEN" \
+  -H "X-GitHub-Api-Version: 2022-11-28" \
+  -o ihxy-blog-ui.zip \
+  https://api.github.com/repos/crayon-hua/ihxy-blog/actions/artifacts/<latest-id>/zip
+```
+
+脚本会先列出该 artifact 名称下未过期的记录，取 `created_at` 最新的一条再下载。PAT 需要 `actions:read`（私有仓库另需 `repo`）。
+
 ### 拉取《Docker 镜像》 -> 部署《Docker 编排》
 
 `package.type=docker-container -> deploy.strategy=docker-compose`
@@ -112,6 +150,7 @@ deploy:
 ```yaml
 package:
   type: docker-container
+  source: gitea              # 可省略，默认 gitea
   owner: gitea-package所有者名字
   name: gitea-package名字
 deploy:
@@ -120,6 +159,18 @@ deploy:
   service: compose文件里面的service名字
   started-check-seconds: 3
 ```
+
+GitHub Container Registry：
+
+```yaml
+package:
+  type: docker-container
+  source: github
+  owner: crayon-hua
+  name: ihxy-blog-go         # 即 docker pull ghcr.io/crayon-hua/ihxy-blog-go:latest
+```
+
+`source=github` 时 package 阶段会用 `github.token` + `github.username`（未配则用 `package.owner`）执行 `docker login ghcr.io`，然后再 `docker pull`。PAT 需要 `read:packages`。**Gitea 镜像不登录。**
 
 `started-check-seconds` 说明：部署后等待指定秒数，检查容器是否仍在运行且未发生重启；配置为 `-1` 时跳过该检查，启动成功即视为部署成功。`docker-compose` 与 `docker-run` 均适用；每个 service **独立**按自己的 `started-check-seconds` 检查，不做 batch 阶梯合并。
 
@@ -131,7 +182,7 @@ deploy:
 
 `package.type=docker-container -> deploy.strategy=docker-run`
 
-同一镜像可配置**多个容器实例**：`deploy.containers` 为数组，每项对应一次 `docker run`。脚本按数组顺序逐个部署；任一实例失败则**全量回滚**（所有实例恢复旧 digest）。镜像地址由 Gitea 配置与 package digest 拼接，**不必在配置里写镜像**；`-d`（后台运行）由脚本默认添加。
+同一镜像可配置**多个容器实例**：`deploy.containers` 为数组，每项对应一次 `docker run`。脚本按数组顺序逐个部署；任一实例失败则**全量回滚**（所有实例恢复旧 digest）。镜像地址由 `package.source` 对应仓库（Gitea 主机或 `ghcr.io`）与 package digest 拼接，**不必在配置里写镜像**；`-d`（后台运行）由脚本默认添加。
 
 每项的 `options`、`command`、`args` 对应 `docker run [OPTIONS] IMAGE [COMMAND] [ARG...]` 中 IMAGE 之前/之后的部分；`options` 必填，`command` 与 `args` 可选。均支持 YAML 字符串数组或 `>-` 折叠块。
 
@@ -140,6 +191,7 @@ deploy:
 ```yaml
 package:
   type: docker-container
+  source: gitea              # 可省略；GitHub 镜像改为 source: github
   owner: gitea-package所有者名字
   name: gitea-package名字
 deploy:
@@ -229,7 +281,7 @@ Hook 在 `package-*.sh`、`deploy-*.sh`、`easy-deploy-agent.sh` 内触发；**w
 | `${hook_current_time}` | 全部；格式 `yyyyMMdd-HHmmss`（Asia/Shanghai） |
 | `${hook_service_name}` | service 级 hook（package / deploy） |
 | `${hook_fail_count}` | `on-agent-fail` |
-| `${hook_package_version_tag}` | `on-package-success`、`on-deploy-start` 及 deploy 阶段 hook；generic 为 Gitea version，docker-container 为 `sha256:...` digest |
+| `${hook_package_version_tag}` | `on-package-success`、`on-deploy-start` 及 deploy 阶段 hook；generic 为 Gitea version 或 GitHub artifact id，docker-container 为 `sha256:...` digest |
 | `${hook_package_errmsg}` | `on-package-fail` |
 | `${hook_deploy_errmsg}` | `on-deploy-fail` |
 

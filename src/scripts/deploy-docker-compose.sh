@@ -36,7 +36,7 @@ compose_service="$(service_deploy_field "$SERVICE_NAME" service)"
 check_seconds="$(service_deploy_field "$SERVICE_NAME" started-check-seconds)"
 owner="$(service_package_field "$SERVICE_NAME" owner)"
 pkg_name="$(service_package_field "$SERVICE_NAME" name)"
-host="$(gitea_host)"
+host="$(package_image_host "$SERVICE_NAME")"
 image_ref="${host}/${owner}/${pkg_name}@${image_digest}"
 
 compose_lock="${compose_file}.easy-deploy.lock"

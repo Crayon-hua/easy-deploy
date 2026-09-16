@@ -38,21 +38,43 @@ has_duplicate() {
 
 validate_gitea() {
   local token url
+  if ! gitea_configured; then
+    return 0
+  fi
+  url="$(gitea_url)"
+  if cfg_is_empty "$url"; then
+    validate_fail "gitea.url 为空（与 gitea.token 须同时配置，或全部省略）"
+    return
+  fi
   token="$(gitea_token 2>/dev/null)" || {
     validate_fail "无法解析 gitea.token"
     return
   }
-  url="$(gitea_url)"
-  if [[ -z "$url" ]]; then
-    validate_fail "gitea.url 为空"
-    return
-  fi
-  if [[ -z "$token" ]]; then
-    validate_fail "gitea.token 为空"
+  if cfg_is_empty "$token"; then
+    validate_fail "gitea.token 为空（与 gitea.url 须同时配置，或全部省略）"
     return
   fi
   if ! curl -sf -H "Authorization: token ${token}" "${url}/api/v1/user" >/dev/null; then
     validate_fail "无法连接 Gitea 或 token 无效 (${url})"
+  fi
+}
+
+validate_github() {
+  local token api
+  if ! github_configured; then
+    return 0
+  fi
+  token="$(github_token 2>/dev/null)" || {
+    validate_fail "无法解析 github.token"
+    return
+  }
+  if cfg_is_empty "$token"; then
+    validate_fail "github.token 为空"
+    return
+  fi
+  api="$(github_api_url)"
+  if ! github_curl "${api}/user" >/dev/null; then
+    validate_fail "无法连接 GitHub 或 token 无效 (${api})"
   fi
 }
 
@@ -107,9 +129,10 @@ validate_services() {
     fi
     names+=("$name")
 
-    local pkg_type strategy owner pkg_name pkg_file target compose svc started reload
+    local pkg_type strategy pkg_source owner pkg_name pkg_file pkg_repo target compose svc started reload
     pkg_type="$(service_package_type "$name")"
     strategy="$(service_deploy_strategy "$name")"
+    pkg_source="$(service_package_source "$name")"
     owner="$(service_package_field "$name" owner)"
     pkg_name="$(service_package_field "$name" name)"
 
@@ -132,6 +155,16 @@ validate_services() {
       validate_fail "service ${name}: docker-container 必须与 docker-compose 或 docker-run 配对"
     fi
 
+    if [[ "$pkg_source" != "gitea" && "$pkg_source" != "github" ]]; then
+      validate_fail "service ${name}: 不支持的 package.source '${pkg_source}'（允许值: gitea | github）"
+    fi
+
+    if [[ "$pkg_source" == "github" ]]; then
+      if ! github_configured; then
+        validate_fail "service ${name}: package.source=github 但未配置 github.token"
+      fi
+    fi
+
     if [[ -z "$owner" || "$owner" == "null" ]]; then
       validate_fail "service ${name}: package.owner 缺失"
     fi
@@ -140,7 +173,7 @@ validate_services() {
     fi
 
     if [[ "$pkg_type" == "docker-container" ]]; then
-      local pkg_key="${owner}/${pkg_name}"
+      local pkg_key="${pkg_source}/${owner}/${pkg_name}"
       if [[ -n "${package_key_first_service[$pkg_key]:-}" ]]; then
         validate_fail "package owner/name 重复: ${pkg_key} (service: ${package_key_first_service[$pkg_key]}, ${name})"
       else
@@ -150,10 +183,22 @@ validate_services() {
 
     if [[ "$pkg_type" == "generic" ]]; then
       pkg_file="$(service_package_field "$name" file)"
+      pkg_repo="$(service_package_field "$name" repo)"
+      if [[ "$pkg_source" == "github" ]]; then
+        if cfg_is_empty "$pkg_repo"; then
+          validate_fail "service ${name}: source=github 的 generic 必须配置 package.repo"
+        fi
+        if [[ -n "$pkg_file" && "$pkg_file" != "null" && "$pkg_file" != *.zip ]]; then
+          validate_fail "service ${name}: GitHub Actions artifact 下载为 zip，package.file 须以 .zip 结尾"
+        fi
+      fi
       if [[ -z "$pkg_file" || "$pkg_file" == "null" ]]; then
         validate_fail "service ${name}: generic 类型必须配置 package.file"
       else
-        local pkg_key="${owner}/${pkg_name}/${pkg_file}"
+        local pkg_key="${pkg_source}/${owner}/${pkg_repo}/${pkg_name}/${pkg_file}"
+        if [[ "$pkg_source" != "github" ]]; then
+          pkg_key="${pkg_source}/${owner}/${pkg_name}/${pkg_file}"
+        fi
         if [[ -n "${package_key_first_service[$pkg_key]:-}" ]]; then
           validate_fail "package owner/name/file 重复: ${pkg_key} (service: ${package_key_first_service[$pkg_key]}, ${name})"
         else
@@ -281,6 +326,7 @@ run_validate() {
   validate_scripts_timeouts
   validate_dependencies
   validate_gitea
+  validate_github
   validate_services
 
   if [[ ${#VALIDATE_ERRORS[@]} -gt 0 ]]; then

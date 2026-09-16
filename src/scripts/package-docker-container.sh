@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Gitea 容器镜像：docker pull 并清理旧镜像
+# 容器镜像：从 Gitea 或 GHCR docker pull 并清理旧镜像
 
 set -euo pipefail
 
@@ -40,11 +40,28 @@ _fail_package() {
 
 owner="$(service_package_field "$SERVICE_NAME" owner)"
 pkg_name="$(service_package_field "$SERVICE_NAME" name)"
-host="$(gitea_host)"
+pkg_source="$(service_package_source "$SERVICE_NAME")"
+host="$(package_image_host "$SERVICE_NAME")"
 image_ref="${host}/${owner}/${pkg_name}:latest"
 repo_prefix="${host}/${owner}/${pkg_name}"
 
 run_hook on-package-start
+
+# 仅 GitHub/GHCR 需要登录；Gitea 仓库暂不 login
+if [[ "$pkg_source" == "github" ]]; then
+  token="$(github_token)"
+  docker_user="$(github_docker_user "$owner")"
+  if [[ -z "$token" ]]; then
+    _fail_package "github.token 为空，无法 docker login ${host}"
+  fi
+  if [[ -z "$docker_user" ]]; then
+    _fail_package "docker login ${host} 需要 github.username（或 package.owner）"
+  fi
+  log_pkg "登录容器仓库: ${host} (user=${docker_user})"
+  if ! printf '%s\n' "$token" | docker login "$host" --username "$docker_user" --password-stdin >&2; then
+    _fail_package "docker login ${host} 失败"
+  fi
+fi
 
 log_pkg "拉取镜像: ${image_ref}"
 pull_output="$(docker pull "$image_ref" 2>&1)" || {

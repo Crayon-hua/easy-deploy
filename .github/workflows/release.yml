@@ -28,7 +28,7 @@ jobs:
 
             安装：
             ```bash
-            curl -fsSL -o easy-deploy.tar.gz https://github.com/wifi504/easy-deploy/releases/latest/download/easy-deploy.tar.gz && mkdir -p easy-deploy && tar -xzf easy-deploy.tar.gz -C easy-deploy && rm -f easy-deploy.tar.gz
+            curl -fsSL -o easy-deploy.tar.gz ${{ github.server_url }}/${{ github.repository }}/releases/latest/download/easy-deploy.tar.gz && mkdir -p easy-deploy && tar -xzf easy-deploy.tar.gz -C easy-deploy && rm -f easy-deploy.tar.gz
             ```
           files: easy-deploy.tar.gz
           make_latest: true
